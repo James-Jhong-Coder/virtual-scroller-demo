@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>固定高度 Virtual Scroller — 2 欄佈局</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f0f2f5;
+      display: flex;
+      justify-content: center;
+      padding: 40px 20px;
+    }
+
+    .wrapper {
+      width: 600px;
+    }
+
+    h1 {
+      font-size: 22px;
+      margin-bottom: 8px;
+      color: #1a1a1a;
+    }
+
+    .stats {
+      margin-bottom: 16px;
+      padding: 12px 16px;
+      background: #fff;
+      border-radius: 8px;
+      font-size: 14px;
+      color: #555;
+      display: flex;
+      gap: 20px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    }
+
+    .stats span {
+      font-weight: 600;
+      color: #1a73e8;
+    }
+
+    /* ---- Virtual Scroller 容器 ---- */
+    .scroll-container {
+      height: 500px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      overscroll-behavior: contain;
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+      position: relative;
+    }
+
+    .scroll-spacer {
+      position: relative;
+    }
+
+    .scroll-content {
+      position: absolute;
+      left: 0;
+      right: 0;
+      will-change: transform;
+    }
+
+    /* ---- 每一列（row）用 flex 排成 2 欄 ---- */
+    .grid-row {
+      display: flex;
+      gap: 12px;
+      padding: 6px 12px;
+      height: 100px;
+    }
+
+    /* 每個卡片 */
+    .grid-item {
+      flex: 1;
+      background: #f8f9fb;
+      border: 1px solid #e8eaed;
+      border-radius: 8px;
+      padding: 12px 16px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      transition: background 0.15s, box-shadow 0.15s;
+      cursor: default;
+    }
+
+    .grid-item:hover {
+      background: #e8f0fe;
+      box-shadow: 0 2px 6px rgba(26, 115, 232, 0.15);
+    }
+
+    .grid-item .id {
+      font-size: 12px;
+      font-weight: 600;
+      color: #1a73e8;
+      margin-bottom: 4px;
+    }
+
+    .grid-item .name {
+      font-size: 14px;
+      color: #333;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .grid-item .desc {
+      font-size: 12px;
+      color: #888;
+      margin-top: 4px;
+    }
+
+    /* 空白佔位（當最後一列只有 1 個項目時） */
+    .grid-item.empty {
+      visibility: hidden;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+    <h1>Virtual Scroller — 2 Column Grid</h1>
+
+    <div class="stats">
+      <div>總項目數：<span id="totalCount">-</span></div>
+      <div>已渲染 DOM：<span id="renderedCount">-</span></div>
+      <div>目前列範圍：<span id="rangeDisplay">-</span></div>
+    </div>
+
+    <div class="scroll-container" id="scrollContainer">
+      <div class="scroll-spacer" id="scrollSpacer">
+        <div class="scroll-content" id="scrollContent"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ============================================
+    //  固定高度 Virtual Scroller — 2 欄版本
+    // ============================================
+
+    const TOTAL_ITEMS = 100000;   // 10 萬筆資料
+    const COLUMNS = 2;            // 欄數
+    const ROW_HEIGHT = 100;       // 每列高度（固定）
+    const OVERSCAN = 3;           // 額外渲染的「列」數
+
+    // 將項目依照欄數分成「列」
+    const TOTAL_ROWS = Math.ceil(TOTAL_ITEMS / COLUMNS);
+
+    // 模擬資料
+    const data = Array.from({ length: TOTAL_ITEMS }, (_, i) => ({
+      id: i,
+      name: `Item #${i}`,
+      desc: `這是第 ${i.toLocaleString()} 筆資料`,
+    }));
+
+    // DOM 元素
+    const container = document.getElementById('scrollContainer');
+    const spacer = document.getElementById('scrollSpacer');
+    const content = document.getElementById('scrollContent');
+    const totalCountEl = document.getElementById('totalCount');
+    const renderedCountEl = document.getElementById('renderedCount');
+    const rangeDisplayEl = document.getElementById('rangeDisplay');
+
+    // 設定總高度（以「列數」計算）
+    spacer.style.height = `${TOTAL_ROWS * ROW_HEIGHT}px`;
+    totalCountEl.textContent = TOTAL_ITEMS.toLocaleString();
+
+    /**
+     * 核心：渲染以「列（row）」為單位，每列包含 COLUMNS 個項目
+     */
+    function render() {
+      const scrollTop = container.scrollTop;
+      const containerHeight = container.clientHeight;
+
+      // 1. 計算可見的列範圍
+      const startRow = Math.floor(scrollTop / ROW_HEIGHT);
+      const endRow = Math.ceil((scrollTop + containerHeight) / ROW_HEIGHT);
+
+      // 2. 加上 overscan
+      const renderStartRow = Math.max(0, startRow - OVERSCAN);
+      const renderEndRow = Math.min(TOTAL_ROWS, endRow + OVERSCAN);
+
+      // 3. translateY 偏移到正確位置
+      const offsetY = renderStartRow * ROW_HEIGHT;
+      content.style.transform = `translateY(${offsetY}px)`;
+
+      // 4. 逐列渲染
+      let html = '';
+      for (let row = renderStartRow; row < renderEndRow; row++) {
+        html += '<div class="grid-row">';
+
+        for (let col = 0; col < COLUMNS; col++) {
+          const itemIndex = row * COLUMNS + col;
+
+          if (itemIndex < TOTAL_ITEMS) {
+            const item = data[itemIndex];
+            html += `
+              <div class="grid-item">
+                <div class="id">#${item.id}</div>
+                <div class="name">${item.name}</div>
+                <div class="desc">${item.desc}</div>
+              </div>
+            `;
+          } else {
+            // 最後一列可能不滿，放空白佔位
+            html += '<div class="grid-item empty"></div>';
+          }
+        }
+
+        html += '</div>';
+      }
+      content.innerHTML = html;
+
+      // 5. 更新統計
+      const renderedRows = renderEndRow - renderStartRow;
+      renderedCountEl.textContent = renderedRows * COLUMNS;
+      rangeDisplayEl.textContent = `Row ${renderStartRow.toLocaleString()} - ${(renderEndRow - 1).toLocaleString()}`;
+    }
+
+    // 用 requestAnimationFrame 節流，避免每個 scroll 事件都重建 DOM
+    let rafId = null;
+    let lastStartRow = -1;
+    let lastEndRow = -1;
+
+    function onScroll() {
+      if (rafId) return; // 已經排程了，跳過
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+
+        // 計算目前應顯示的列範圍
+        const scrollTop = container.scrollTop;
+        const startRow = Math.floor(scrollTop / ROW_HEIGHT);
+        const endRow = Math.ceil((scrollTop + container.clientHeight) / ROW_HEIGHT);
+        const renderStartRow = Math.max(0, startRow - OVERSCAN);
+        const renderEndRow = Math.min(TOTAL_ROWS, endRow + OVERSCAN);
+
+        // 如果範圍沒變，就不重建 DOM
+        if (renderStartRow === lastStartRow && renderEndRow === lastEndRow) return;
+        lastStartRow = renderStartRow;
+        lastEndRow = renderEndRow;
+
+        render();
+      });
+    }
+
+    container.addEventListener('scroll', onScroll, { passive: true });
+    render();
+  </script>
+</body>
+</html>

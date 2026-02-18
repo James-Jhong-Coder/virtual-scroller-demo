@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>動態高度 N 欄 Virtual Scroller 範例</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f0f2f5;
+      display: flex;
+      justify-content: center;
+      padding: 40px 20px;
+    }
+
+    .wrapper {
+      width: 700px;
+    }
+
+    h1 {
+      font-size: 22px;
+      margin-bottom: 8px;
+      color: #1a1a1a;
+    }
+
+    .controls {
+      margin-bottom: 12px;
+      padding: 12px 16px;
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 14px;
+      color: #555;
+    }
+
+    .controls label {
+      font-weight: 600;
+    }
+
+    .controls select {
+      padding: 4px 8px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+      font-size: 14px;
+    }
+
+    .stats {
+      margin-bottom: 16px;
+      padding: 12px 16px;
+      background: #fff;
+      border-radius: 8px;
+      font-size: 14px;
+      color: #555;
+      display: flex;
+      gap: 20px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    }
+
+    .stats span {
+      font-weight: 600;
+      color: #1a73e8;
+    }
+
+    .scroll-container {
+      height: 500px;
+      overflow-y: auto;
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+      position: relative;
+    }
+
+    .scroll-spacer {
+      position: relative;
+    }
+
+    .scroll-content {
+      position: absolute;
+      left: 0;
+      right: 0;
+    }
+
+    /* 每一列（row） */
+    .row {
+      display: flex;
+      border-bottom: 1px solid #f0f0f0;
+    }
+
+    /* 每一格（cell） */
+    .cell {
+      flex: 1;
+      padding: 12px 16px;
+      border-right: 1px solid #f0f0f0;
+      font-size: 13px;
+      color: #333;
+      transition: background 0.15s;
+    }
+
+    .cell:last-child {
+      border-right: none;
+    }
+
+    .cell:hover {
+      background: #f5f8ff;
+    }
+
+    .cell .index {
+      font-weight: 600;
+      color: #1a73e8;
+      margin-bottom: 4px;
+    }
+
+    .cell .text {
+      line-height: 1.5;
+      color: #555;
+    }
+
+    .cell.empty {
+      visibility: hidden;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+    <h1>Dynamic Height N-Column Virtual Scroller</h1>
+
+    <div class="controls">
+      <label for="colSelect">欄數：</label>
+      <select id="colSelect">
+        <option value="1">1 欄</option>
+        <option value="2" selected>2 欄</option>
+        <option value="3">3 欄</option>
+        <option value="4">4 欄</option>
+      </select>
+    </div>
+
+    <div class="stats">
+      <div>總項目數：<span id="totalCount">-</span></div>
+      <div>總列數：<span id="totalRows">-</span></div>
+      <div>已渲染 DOM 列：<span id="renderedCount">-</span></div>
+      <div>目前列範圍：<span id="rangeDisplay">-</span></div>
+    </div>
+
+    <div class="scroll-container" id="scrollContainer">
+      <div class="scroll-spacer" id="scrollSpacer">
+        <div class="scroll-content" id="scrollContent"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ============================================
+    //  動態高度 N 欄 Virtual Scroller
+    //
+    //  核心差異（vs 單欄版）：
+    //  - 項目按 N 欄排成「列（row）」
+    //  - 每列的高度 = 該列中最高的 cell
+    //  - prefixSum 改成以「列」為單位
+    //  - 量測也改成量測「整列」的高度
+    // ============================================
+
+    const TOTAL_ITEMS = 10000;
+    const ESTIMATED_ROW_HEIGHT = 70;
+    const OVERSCAN = 3;
+
+    let COLS = 2;
+
+    // 模擬資料：每個項目有隨機行數的文字
+    const data = Array.from({ length: TOTAL_ITEMS }, (_, i) => {
+      const lines = 1 + Math.floor(Math.random() * 5);
+      let text = '';
+      for (let l = 0; l < lines; l++) {
+        text += `第 ${i} 筆，行 ${l + 1}。`;
+        if (l < lines - 1) text += '\n';
+      }
+      return { id: i, text };
+    });
+
+    console.log('data = ', data)
+
+    // DOM
+    const container = document.getElementById('scrollContainer');
+    const spacer = document.getElementById('scrollSpacer');
+    const content = document.getElementById('scrollContent');
+    const totalCountEl = document.getElementById('totalCount');
+    const totalRowsEl = document.getElementById('totalRows');
+    const renderedCountEl = document.getElementById('renderedCount');
+    const rangeDisplayEl = document.getElementById('rangeDisplay');
+    const colSelect = document.getElementById('colSelect');
+
+    totalCountEl.textContent = TOTAL_ITEMS.toLocaleString();
+
+    // ---------- 以列為單位的高度管理 ----------
+
+    let totalRows = 0;
+    let measuredRowHeights = null; // Float64Array
+    let prefixSum = null;          // Float64Array
+
+    function getTotalRows() {
+      return Math.ceil(TOTAL_ITEMS / COLS);
+    }
+
+    function initHeights() {
+      totalRows = getTotalRows();
+      measuredRowHeights = new Float64Array(totalRows);
+      prefixSum = new Float64Array(totalRows + 1);
+
+      for (let r = 0; r < totalRows; r++) {
+        prefixSum[r + 1] = prefixSum[r] + ESTIMATED_ROW_HEIGHT;
+      }
+
+      totalRowsEl.textContent = totalRows.toLocaleString();
+      spacer.style.height = `${prefixSum[totalRows]}px`;
+    }
+
+    function getRowHeight(row) {
+      return measuredRowHeights[row] || ESTIMATED_ROW_HEIGHT;
+    }
+
+    function rebuildPrefixSum(fromRow) {
+      for (let r = fromRow; r < totalRows; r++) {
+        prefixSum[r + 1] = prefixSum[r] + getRowHeight(r);
+      }
+    }
+
+    function getRowTop(row) {
+      return prefixSum[row];
+    }
+
+    function getTotalHeight() {
+      return prefixSum[totalRows];
+    }
+
+    // 二分搜尋：scrollTop → row index
+    function findStartRow(scrollTop) {
+      let lo = 0, hi = totalRows - 1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >>> 1;
+        if (prefixSum[mid + 1] <= scrollTop) {
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      return Math.min(lo, totalRows - 1);
+    }
+
+    // ---------- 渲染 ----------
+
+    function render() {
+      const scrollTop = container.scrollTop;
+      const containerHeight = container.clientHeight;
+
+      // 1. 找可見列範圍
+      const startRow = findStartRow(scrollTop);
+      let endRow = startRow;
+      let acc = getRowTop(startRow);
+      while (endRow < totalRows && acc < scrollTop + containerHeight) {
+        acc += getRowHeight(endRow);
+        endRow++;
+      }
+
+      // 2. overscan
+      const renderStart = Math.max(0, startRow - OVERSCAN);
+      const renderEnd = Math.min(totalRows, endRow + OVERSCAN);
+
+      // 3. 定位
+      content.style.transform = `translateY(${getRowTop(renderStart)}px)`;
+
+      // 4. 渲染列
+      let html = '';
+      for (let r = renderStart; r < renderEnd; r++) {
+        html += '<div class="row">';
+        for (let c = 0; c < COLS; c++) {
+          const itemIndex = r * COLS + c;
+          if (itemIndex < TOTAL_ITEMS) {
+            const item = data[itemIndex];
+            const textHtml = item.text.replace(/\n/g, '<br>');
+            html += `
+              <div class="cell">
+                <div class="index">#${item.id}</div>
+                <div class="text">${textHtml}</div>
+              </div>`;
+          } else {
+            html += '<div class="cell empty"></div>';
+          }
+        }
+        html += '</div>';
+      }
+      content.innerHTML = html;
+
+      // 5. 量測每列真實高度
+      let needRebuild = false;
+      let rebuildFrom = totalRows;
+      const rowEls = content.children;
+      for (let j = 0; j < rowEls.length; j++) {
+        const rowIdx = renderStart + j;
+        const realHeight = rowEls[j].getBoundingClientRect().height;
+        if (measuredRowHeights[rowIdx] !== realHeight) {
+          measuredRowHeights[rowIdx] = realHeight;
+          needRebuild = true;
+          rebuildFrom = Math.min(rebuildFrom, rowIdx);
+        }
+      }
+
+      // 6. 重建 prefixSum
+      if (needRebuild) {
+        rebuildPrefixSum(rebuildFrom);
+        spacer.style.height = `${getTotalHeight()}px`;
+      }
+
+      // 7. 統計
+      renderedCountEl.textContent = renderEnd - renderStart;
+      rangeDisplayEl.textContent = `${renderStart} - ${renderEnd - 1}`;
+    }
+
+    // ---------- 切換欄數 ----------
+
+    colSelect.addEventListener('change', (e) => {
+      COLS = Number(e.target.value);
+      initHeights();
+      container.scrollTop = 0;
+      render();
+    });
+
+    container.addEventListener('scroll', render);
+
+    // 初始化
+    initHeights();
+    render();
+  </script>
+</body>
+</html>

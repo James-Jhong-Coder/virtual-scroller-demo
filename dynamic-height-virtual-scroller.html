@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>動態高度 Virtual Scroller 範例</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f0f2f5;
+      display: flex;
+      justify-content: center;
+      padding: 40px 20px;
+    }
+
+    .wrapper {
+      width: 500px;
+    }
+
+    h1 {
+      font-size: 22px;
+      margin-bottom: 8px;
+      color: #1a1a1a;
+    }
+
+    .stats {
+      margin-bottom: 16px;
+      padding: 12px 16px;
+      background: #fff;
+      border-radius: 8px;
+      font-size: 14px;
+      color: #555;
+      display: flex;
+      gap: 20px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    }
+
+    .stats span {
+      font-weight: 600;
+      color: #1a73e8;
+    }
+
+    .scroll-container {
+      height: 500px;
+      overflow-y: auto;
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+      position: relative;
+    }
+
+    .scroll-spacer {
+      position: relative;
+    }
+
+    .scroll-content {
+      position: absolute;
+      left: 0;
+      right: 0;
+    }
+
+    .list-item {
+      padding: 12px 20px;
+      border-bottom: 1px solid #f0f0f0;
+      font-size: 14px;
+      color: #333;
+      transition: background 0.15s;
+    }
+
+    .list-item:hover {
+      background: #f5f8ff;
+    }
+
+    .list-item .index {
+      font-weight: 600;
+      color: #1a73e8;
+      margin-bottom: 4px;
+    }
+
+    .list-item .text {
+      line-height: 1.5;
+      color: #555;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+    <h1>Dynamic Height Virtual Scroller</h1>
+
+    <div class="stats">
+      <div>總項目數：<span id="totalCount">-</span></div>
+      <div>已渲染 DOM：<span id="renderedCount">-</span></div>
+      <div>目前範圍：<span id="rangeDisplay">-</span></div>
+    </div>
+
+    <div class="scroll-container" id="scrollContainer">
+      <div class="scroll-spacer" id="scrollSpacer">
+        <div class="scroll-content" id="scrollContent"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ============================================
+    //  動態高度 Virtual Scroller 實作
+    //  核心思路：
+    //  1. 先用「預估高度」算出總高度，讓捲軸能正常顯示
+    //  2. 項目實際渲染後，量測真實高度並快取起來
+    //  3. 用快取的真實高度重新計算位置，逐步修正總高度
+    // ============================================
+
+    const TOTAL_ITEMS = 10000;
+    const ESTIMATED_HEIGHT = 60;  // 預估每個項目的高度
+    const OVERSCAN = 5;
+
+    // 模擬資料：每個項目的文字長度不同，造成不同高度
+    const data = Array.from({ length: TOTAL_ITEMS }, (_, i) => {
+      const lines = 1 + Math.floor(Math.random() * 4); // 1~4 行
+      let text = '';
+      for (let l = 0; l < lines; l++) {
+        text += `這是第 ${i} 筆資料的第 ${l + 1} 行內容。`;
+        if (l < lines - 1) text += '\n';
+      }
+      return { id: i, text };
+    });
+
+    // 快取每個項目的實際高度，未量測的用 0 表示
+    const measuredHeights = new Float64Array(TOTAL_ITEMS);
+    // 前綴和陣列：prefixSum[i] = 前 i 個項目的累計高度
+    const prefixSum = new Float64Array(TOTAL_ITEMS + 1);
+
+    // 初始化：全部用預估高度
+    for (let i = 0; i < TOTAL_ITEMS; i++) {
+      measuredHeights[i] = 0; // 0 = 尚未量測
+      prefixSum[i + 1] = prefixSum[i] + ESTIMATED_HEIGHT;
+    }
+
+    // 取得某項目的高度（已量測就用真實值，否則用預估值）
+    function getHeight(index) {
+      return measuredHeights[index] || ESTIMATED_HEIGHT;
+    }
+
+    // 從 index 開始重建前綴和
+    function rebuildPrefixSum(fromIndex) {
+      for (let i = fromIndex; i < TOTAL_ITEMS; i++) {
+        prefixSum[i + 1] = prefixSum[i] + getHeight(i);
+      }
+    }
+
+    // 取得某項目的 top 位置
+    function getOffsetTop(index) {
+      return prefixSum[index];
+    }
+
+    // 取得總高度
+    function getTotalHeight() {
+      return prefixSum[TOTAL_ITEMS];
+    }
+
+    // 二分搜尋：根據 scrollTop 找到第一個可見項目的 index
+    function findStartIndex(scrollTop) {
+      let lo = 0, hi = TOTAL_ITEMS - 1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >>> 1;
+        if (prefixSum[mid + 1] <= scrollTop) {
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      return Math.min(lo, TOTAL_ITEMS - 1);
+    }
+
+    // DOM 元素
+    const container = document.getElementById('scrollContainer');
+    const spacer = document.getElementById('scrollSpacer');
+    const content = document.getElementById('scrollContent');
+    const totalCountEl = document.getElementById('totalCount');
+    const renderedCountEl = document.getElementById('renderedCount');
+    const rangeDisplayEl = document.getElementById('rangeDisplay');
+
+    totalCountEl.textContent = TOTAL_ITEMS.toLocaleString();
+    spacer.style.height = `${getTotalHeight()}px`;
+
+    function render() {
+      const scrollTop = container.scrollTop;
+      const containerHeight = container.clientHeight;
+
+      // 1. 找到可見範圍
+      const startIndex = findStartIndex(scrollTop);
+      let endIndex = startIndex;
+      let accHeight = getOffsetTop(startIndex);
+      while (endIndex < TOTAL_ITEMS && accHeight < scrollTop + containerHeight) {
+        accHeight += getHeight(endIndex);
+        endIndex++;
+      }
+
+      // 2. 加上 overscan
+      const renderStart = Math.max(0, startIndex - OVERSCAN);
+      const renderEnd = Math.min(TOTAL_ITEMS, endIndex + OVERSCAN);
+
+      // 3. 定位 content
+      const offsetY = getOffsetTop(renderStart);
+      content.style.transform = `translateY(${offsetY}px)`;
+
+      // 4. 渲染項目
+      let html = '';
+      for (let i = renderStart; i < renderEnd; i++) {
+        const item = data[i];
+        const textHtml = item.text.replace(/\n/g, '<br>');
+        html += `
+          <div class="list-item" data-index="${i}">
+            <div class="index">#${item.id}</div>
+            <div class="text">${textHtml}</div>
+          </div>
+        `;
+      }
+      content.innerHTML = html;
+
+      // 5. 量測真實高度並更新快取
+      let needRebuild = false;
+      let rebuildFrom = TOTAL_ITEMS;
+      const items = content.children;
+      for (let j = 0; j < items.length; j++) {
+        const idx = renderStart + j;
+        const realHeight = items[j].getBoundingClientRect().height;
+        if (measuredHeights[idx] !== realHeight) {
+          measuredHeights[idx] = realHeight;
+          needRebuild = true;
+          rebuildFrom = Math.min(rebuildFrom, idx);
+        }
+      }
+
+      // 6. 如果有新的量測結果，重建前綴和 & 更新總高度
+      if (needRebuild) {
+        rebuildPrefixSum(rebuildFrom);
+        spacer.style.height = `${getTotalHeight()}px`;
+      }
+
+      // 7. 更新統計
+      const renderedCount = renderEnd - renderStart;
+      renderedCountEl.textContent = renderedCount;
+      rangeDisplayEl.textContent = `${renderStart.toLocaleString()} - ${(renderEnd - 1).toLocaleString()}`;
+    }
+
+    container.addEventListener('scroll', render);
+    render();
+  </script>
+</body>
+</html>

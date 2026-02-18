@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>固定高度 Virtual Scroller — 水平 + 垂直雙向捲動</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f0f2f5;
+      display: flex;
+      justify-content: center;
+      padding: 40px 20px;
+    }
+
+    .wrapper {
+      width: 700px;
+    }
+
+    h1 {
+      font-size: 22px;
+      margin-bottom: 8px;
+      color: #1a1a1a;
+    }
+
+    .stats {
+      margin-bottom: 16px;
+      padding: 12px 16px;
+      background: #fff;
+      border-radius: 8px;
+      font-size: 14px;
+      color: #555;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    }
+
+    .stats span {
+      font-weight: 600;
+      color: #1a73e8;
+    }
+
+    /* ---- Virtual Scroller 容器 ---- */
+    .scroll-container {
+      height: 500px;
+      width: 100%;
+      overflow: auto;
+      overscroll-behavior: contain;
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+      position: relative;
+    }
+
+    /* 撐出完整的虛擬空間（水平 + 垂直） */
+    .scroll-spacer {
+      position: relative;
+    }
+
+    .scroll-content {
+      position: absolute;
+      will-change: transform;
+    }
+
+    /* ---- 每一列 ---- */
+    .grid-row {
+      display: flex;
+      height: 100px;
+    }
+
+    /* 每個格子 */
+    .grid-cell {
+      width: 180px;
+      min-width: 180px;
+      height: 100px;
+      padding: 6px;
+    }
+
+    .grid-cell-inner {
+      width: 100%;
+      height: 100%;
+      background: #f8f9fb;
+      border: 1px solid #e8eaed;
+      border-radius: 8px;
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      transition: background 0.15s, box-shadow 0.15s;
+      cursor: default;
+    }
+
+    .grid-cell-inner:hover {
+      background: #e8f0fe;
+      box-shadow: 0 2px 6px rgba(26, 115, 232, 0.15);
+    }
+
+    .grid-cell-inner .id {
+      font-size: 11px;
+      font-weight: 600;
+      color: #1a73e8;
+      margin-bottom: 2px;
+    }
+
+    .grid-cell-inner .name {
+      font-size: 13px;
+      color: #333;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .grid-cell-inner .coord {
+      font-size: 11px;
+      color: #888;
+      margin-top: 4px;
+    }
+
+    /* 列 / 行 header */
+    .header-cell {
+      background: #e3ecfa;
+      border: 1px solid #c4d7f2;
+      color: #1a56a8;
+      font-weight: 700;
+      font-size: 13px;
+      text-align: center;
+    }
+
+    .header-cell:hover {
+      background: #d0e0f7;
+      box-shadow: none;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="wrapper">
+    <h1>Virtual Scroller — 2D 水平 + 垂直捲動</h1>
+
+    <div class="stats">
+      <div>總欄數：<span id="totalCols">-</span></div>
+      <div>總列數：<span id="totalRows">-</span></div>
+      <div>總格數：<span id="totalCells">-</span></div>
+      <div>已渲染 DOM：<span id="renderedCount">-</span></div>
+      <div>可見範圍：<span id="rangeDisplay">-</span></div>
+    </div>
+
+    <div class="scroll-container" id="scrollContainer">
+      <div class="scroll-spacer" id="scrollSpacer">
+        <div class="scroll-content" id="scrollContent"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ============================================
+    //  固定高度 Virtual Scroller — 2D 雙向捲動
+    // ============================================
+
+    const TOTAL_COLS = 50;           // 總欄數（水平方向）
+    const TOTAL_ROWS = 10000;        // 總列數（垂直方向）
+    const CELL_WIDTH = 180;          // 每格寬度（固定）
+    const ROW_HEIGHT = 100;          // 每列高度（固定）
+    const OVERSCAN_ROW = 3;          // 垂直額外渲染列數
+    const OVERSCAN_COL = 2;          // 水平額外渲染欄數
+
+    // 模擬資料：用函式按需產生（避免一次產生 50 萬筆）
+    function getCellData(row, col) {
+      const index = row * TOTAL_COLS + col;
+      return {
+        id: index,
+        row: row,
+        col: col,
+        name: `Cell ${row},${col}`,
+      };
+    }
+
+    // DOM 元素
+    const container = document.getElementById('scrollContainer');
+    const spacer = document.getElementById('scrollSpacer');
+    const content = document.getElementById('scrollContent');
+    const totalColsEl = document.getElementById('totalCols');
+    const totalRowsEl = document.getElementById('totalRows');
+    const totalCellsEl = document.getElementById('totalCells');
+    const renderedCountEl = document.getElementById('renderedCount');
+    const rangeDisplayEl = document.getElementById('rangeDisplay');
+
+    // 設定虛擬空間的總寬高
+    spacer.style.width = `${TOTAL_COLS * CELL_WIDTH}px`;
+    spacer.style.height = `${TOTAL_ROWS * ROW_HEIGHT}px`;
+
+    totalColsEl.textContent = TOTAL_COLS.toLocaleString();
+    totalRowsEl.textContent = TOTAL_ROWS.toLocaleString();
+    totalCellsEl.textContent = (TOTAL_COLS * TOTAL_ROWS).toLocaleString();
+
+    /**
+     * 核心渲染：同時虛擬化水平與垂直方向
+     */
+    function render() {
+      const scrollTop = container.scrollTop;
+      const scrollLeft = container.scrollLeft;
+      const viewHeight = container.clientHeight;
+      const viewWidth = container.clientWidth;
+
+      // 1. 計算可見的列（row）範圍
+      const startRow = Math.floor(scrollTop / ROW_HEIGHT);
+      const endRow = Math.ceil((scrollTop + viewHeight) / ROW_HEIGHT);
+      const renderStartRow = Math.max(0, startRow - OVERSCAN_ROW);
+      const renderEndRow = Math.min(TOTAL_ROWS, endRow + OVERSCAN_ROW);
+
+      // 2. 計算可見的欄（col）範圍
+      const startCol = Math.floor(scrollLeft / CELL_WIDTH);
+      const endCol = Math.ceil((scrollLeft + viewWidth) / CELL_WIDTH);
+      const renderStartCol = Math.max(0, startCol - OVERSCAN_COL);
+      const renderEndCol = Math.min(TOTAL_COLS, endCol + OVERSCAN_COL);
+
+      // 3. 用 translate 偏移到正確位置
+      const offsetY = renderStartRow * ROW_HEIGHT;
+      const offsetX = renderStartCol * CELL_WIDTH;
+      content.style.transform = `translate(${offsetX}px, ${offsetY}px)`;
+
+      // 4. 產生可見區域的 HTML
+      let html = '';
+      for (let row = renderStartRow; row < renderEndRow; row++) {
+        html += '<div class="grid-row">';
+
+        for (let col = renderStartCol; col < renderEndCol; col++) {
+          const cell = getCellData(row, col);
+          html += `
+            <div class="grid-cell">
+              <div class="grid-cell-inner">
+                <div class="id">#${cell.id.toLocaleString()}</div>
+                <div class="name">${cell.name}</div>
+                <div class="coord">Row ${row} · Col ${col}</div>
+              </div>
+            </div>
+          `;
+        }
+
+        html += '</div>';
+      }
+      content.innerHTML = html;
+
+      // 5. 更新統計
+      const renderedRows = renderEndRow - renderStartRow;
+      const renderedCols = renderEndCol - renderStartCol;
+      renderedCountEl.textContent = (renderedRows * renderedCols).toLocaleString();
+      rangeDisplayEl.textContent =
+        `Row ${renderStartRow}–${renderEndRow - 1}, Col ${renderStartCol}–${renderEndCol - 1}`;
+    }
+
+    // 節流：用 rAF 避免每個 scroll 事件都重建
+    let rafId = null;
+    let lastStartRow = -1;
+    let lastEndRow = -1;
+    let lastStartCol = -1;
+    let lastEndCol = -1;
+
+    function onScroll() {
+      if (rafId) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+
+        const scrollTop = container.scrollTop;
+        const scrollLeft = container.scrollLeft;
+        const viewHeight = container.clientHeight;
+        const viewWidth = container.clientWidth;
+
+        const startRow = Math.floor(scrollTop / ROW_HEIGHT);
+        const endRow = Math.ceil((scrollTop + viewHeight) / ROW_HEIGHT);
+        const renderStartRow = Math.max(0, startRow - OVERSCAN_ROW);
+        const renderEndRow = Math.min(TOTAL_ROWS, endRow + OVERSCAN_ROW);
+
+        const startCol = Math.floor(scrollLeft / CELL_WIDTH);
+        const endCol = Math.ceil((scrollLeft + viewWidth) / CELL_WIDTH);
+        const renderStartCol = Math.max(0, startCol - OVERSCAN_COL);
+        const renderEndCol = Math.min(TOTAL_COLS, endCol + OVERSCAN_COL);
+
+        // 範圍沒變就不重建
+        if (
+          renderStartRow === lastStartRow &&
+          renderEndRow === lastEndRow &&
+          renderStartCol === lastStartCol &&
+          renderEndCol === lastEndCol
+        ) return;
+
+        lastStartRow = renderStartRow;
+        lastEndRow = renderEndRow;
+        lastStartCol = renderStartCol;
+        lastEndCol = renderEndCol;
+
+        render();
+      });
+    }
+
+    container.addEventListener('scroll', onScroll, { passive: true });
+    render();
+  </script>
+</body>
+
+</html>
